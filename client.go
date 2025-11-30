@@ -22,59 +22,144 @@ type DxLinkClient struct {
 	conn           *websocket.Conn
 	url            string
 	token          string
-	optionSubs     map[string]*OptionData
-	underlyingSubs map[string]*UnderlyingData
 	mu             sync.RWMutex
 	connected      bool
 	messageCounter int
-	callbacks      map[string]MessageCallback
 	ctx            context.Context
 	cancel         context.CancelFunc
 	retries        int
 	delay          time.Duration
 	expBackoff     bool
+
+	// Optional
 	dxlog          *slog.Logger
+	optionSubs     map[string]*feedData
+	underlyingSubs map[string]*feedData
+	futuresSubs    map[string]*feedData
+	// Unused
+	callbacks map[string]MessageCallback
 }
 
 func New(ctx context.Context, url string, token string) *DxLinkClient {
 	ctx, cancel := context.WithCancel(ctx)
-	dxlog := slog.Default()
 	return &DxLinkClient{
-		url:            url,
-		optionSubs:     make(map[string]*OptionData),
-		underlyingSubs: make(map[string]*UnderlyingData),
-		callbacks:      make(map[string]MessageCallback),
-		ctx:            ctx,
-		cancel:         cancel,
-		token:          token,
-		retries:        3,
-		delay:          1 * time.Second,
-		expBackoff:     false,
-		dxlog:          dxlog,
+		url:        url,
+		ctx:        ctx,
+		cancel:     cancel,
+		token:      token,
+		retries:    3,
+		delay:      1 * time.Second,
+		expBackoff: false,
 	}
 }
 
-func (c *DxLinkClient) ResetData() {
-	clear(c.optionSubs)
-	clear(c.underlyingSubs)
+func (c *DxLinkClient) WithLogger(logger *slog.Logger) *DxLinkClient {
+	c.dxlog = logger
+	return c
 }
 
-func (c *DxLinkClient) UpdateOptionSubs(
+func (c *DxLinkClient) WithOptionSubs(
 	symbol string,
 	options []string,
 	mktPrice float64,
 	pctRange float64,
 	filter filterFunc,
-) error {
+) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.underlyingSubs[symbol] = NewUnderlying()
+	c.optionSubs = make(map[string]*feedData)
 	filtered := filter(options, mktPrice, pctRange)
 	for _, option := range filtered {
-		c.optionSubs[option] = NewOptionData()
+		c.optionSubs[option] = NewFeedData().WithGreeks().WithQuote()
 	}
-	return nil
+	return c
+}
+
+func (c *DxLinkClient) WithUnderlying(symbol string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.underlyingSubs = make(map[string]*feedData)
+	c.underlyingSubs[symbol] = NewFeedData().WithTrade()
+}
+
+func (c *DxLinkClient) WithFuture(symbol string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.futuresSubs = make(map[string]*feedData)
+	c.futuresSubs[symbol] = NewFeedData().WithTrade()
+}
+
+// creates the struct that the "FEED_SUBSCRIPTION" message is based on
+func (c *DxLinkClient) underlyingFeedSub() FeedSubscriptionMsg {
+	feedSub := FeedSubscriptionMsg{
+		Type:    FeedSubscription,
+		Channel: 1,
+		Reset:   true,
+		Add:     []FeedSubItem{},
+	}
+
+	for under := range c.underlyingSubs {
+		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Trade", Symbol: under})
+	}
+	return feedSub
+}
+
+func (c *DxLinkClient) optionFeedSub() FeedSubscriptionMsg {
+	feedSub := FeedSubscriptionMsg{
+		Type:    FeedSubscription,
+		Channel: 3,
+		Reset:   true,
+		Add:     []FeedSubItem{},
+	}
+	for opt := range c.optionSubs {
+		if len(feedSub.Add) >= 90 {
+			break
+		}
+		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: opt})
+		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Greeks", Symbol: opt})
+	}
+	return feedSub
+}
+
+func (c *DxLinkClient) optionFeedIter() iter.Seq[FeedSubscriptionMsg] {
+	return func(yield func(FeedSubscriptionMsg) bool) {
+		syms := slices.Collect(maps.Keys(c.optionSubs))
+		chunks := chunkSlice(syms, 45)
+
+		for _, c := range chunks {
+			feedSub := FeedSubscriptionMsg{
+				Type:    FeedSubscription,
+				Channel: 3,
+				Reset:   false,
+				Add:     []FeedSubItem{},
+			}
+			for _, v := range c {
+				feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: v})
+				feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Greeks", Symbol: v})
+			}
+			if !yield(feedSub) {
+				return
+			}
+		}
+	}
+}
+
+// creates the struct that the "FEED_SUBSCRIPTION" message is based on
+func (c *DxLinkClient) futureFeedSub() FeedSubscriptionMsg {
+	feedSub := FeedSubscriptionMsg{
+		Type:    FeedSubscription,
+		Channel: 5,
+		Reset:   true,
+		Add:     []FeedSubItem{},
+	}
+
+	for under := range c.futuresSubs {
+		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Trade", Symbol: under})
+	}
+	return feedSub
 }
 
 func (c *DxLinkClient) LenOptionSubs() int {
@@ -204,7 +289,7 @@ func (c *DxLinkClient) Close() error {
 	return nil
 }
 
-func (c *DxLinkClient) sendMessage(msg interface{}) error {
+func (c *DxLinkClient) sendMessage(msg any) error {
 	if c.conn == nil {
 		return fmt.Errorf("unable to send message, no connection")
 	}
@@ -222,9 +307,7 @@ func (c *DxLinkClient) sendMessage(msg interface{}) error {
 	if n > len(msgStr) {
 		n = len(msgStr)
 	}
-	c.dxlog.Info("CLIENT ->", "", msgStr[:n])
-	//fd, _ := json.MarshalIndent(msg, "", "  ")
-	//fmt.Printf("sent message: %s\n", string(fd))
+	c.outputClientMsg("", msgStr[:n])
 
 	err = c.conn.WriteMessage(websocket.TextMessage, data)
 	if err != nil {
@@ -273,7 +356,7 @@ func (c *DxLinkClient) handleMessages() {
 }
 
 func (c *DxLinkClient) processMessage(message []byte) {
-	var msgMap map[string]interface{}
+	var msgMap map[string]any
 	if err := json.Unmarshal(message, &msgMap); err != nil {
 		slog.Error("Error unmarshaling message", "err", err)
 		return
@@ -301,7 +384,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			slog.Error("unable to unmarshal auth state msg")
 			return
 		}
-		c.dxlog.Info("SERVER <-", "", resp)
+		c.outputServerMsg("", resp)
 		if resp.State == "UNAUTHORIZED" {
 			authMsg := AuthMsg{
 				Type:    Auth,
@@ -339,10 +422,11 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			slog.Error("unable to unmarshal channel open msg")
 			return
 		}
-		c.dxlog.Info("SERVER <-", "", resp)
+		c.outputServerMsg("", resp)
 		// TODO: add eventTime to quote for age validation
 		var feedSetup FeedSetupMsg
-		if resp.Channel == 1 {
+		switch resp.Channel {
+		case 1:
 			// UNDERLYING
 			feedSetup = FeedSetupMsg{
 				Type:                    FeedSetup,
@@ -355,7 +439,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 					//Candle: []string{"eventType", "eventSymbol", "time", "open", "high", "low", "close", "volume", "impVolatility", "openInterest"},
 				},
 			}
-		} else if resp.Channel == 3 {
+		case 3:
 			// OPTIONS
 			feedSetup = FeedSetupMsg{
 				Type:                    FeedSetup,
@@ -365,6 +449,18 @@ func (c *DxLinkClient) processMessage(message []byte) {
 				AcceptEventFields: FeedEventFields{
 					Quote:  []string{"eventType", "eventSymbol", "bidPrice", "askPrice"},
 					Greeks: []string{"eventType", "eventSymbol", "price", "volatility", "delta", "gamma", "theta", "rho", "vega"},
+				},
+			}
+		case 5:
+			// FUTURES
+			feedSetup = FeedSetupMsg{
+				Type:                    FeedSetup,
+				Channel:                 1,
+				AcceptAggregationPeriod: 60,
+				AcceptDataFormat:        CompactFormat,
+				AcceptEventFields: FeedEventFields{
+					Trade: []string{"eventType", "eventSymbol", "price", "size"},
+					//Candle: []string{"eventType", "eventSymbol", "time", "open", "high", "low", "close", "volume", "impVolatility", "openInterest"},
 				},
 			}
 		}
@@ -377,17 +473,21 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			fmt.Printf("%s\n\n", string(message))
 			return
 		}
-		c.dxlog.Info("SERVER <-", "", resp)
+		c.outputServerMsg("", resp)
 		var feedSub FeedSubscriptionMsg
-		if resp.Channel == 1 {
+		switch resp.Channel {
+		case 1:
 			feedSub = c.underlyingFeedSub()
 			c.sendMessage(feedSub)
-		} else if resp.Channel == 3 {
+		case 3:
 			fmt.Println("Channel 3 response, getting option feed subs")
 			//feedSub = c.optionFeedSub()
 			for m := range c.optionFeedIter() {
 				c.sendMessage(m)
 			}
+		case 5:
+			feedSub = c.futureFeedSub()
+			c.sendMessage(feedSub)
 		}
 	case string(FeedData):
 		resp := FeedDataMsg{}
@@ -403,25 +503,36 @@ func (c *DxLinkClient) processMessage(message []byte) {
 		switch resp.Channel {
 		case 1:
 			if len(resp.Data.Trades) > 0 {
-				c.dxlog.Info("SERVER <-", "trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
+				c.outputServerMsg("trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
 				for _, trade := range resp.Data.Trades {
 					if _, ok := c.underlyingSubs[trade.Symbol]; !ok {
-						c.underlyingSubs[trade.Symbol] = NewUnderlying()
+						c.underlyingSubs[trade.Symbol] = NewFeedData().WithTrade()
 					}
 					c.underlyingSubs[trade.Symbol].Trade = trade
 				}
 			}
 		case 3:
 			if len(resp.Data.Quotes) > 0 {
-				c.dxlog.Info("SERVER <-", "quotes rec'd", resp.Data.Quotes[0], "size", len(resp.Data.Quotes))
+				c.outputServerMsg("quotes rec'd", resp.Data.Quotes[0], "size", len(resp.Data.Quotes))
 				for _, quote := range resp.Data.Quotes {
 					c.optionSubs[quote.Symbol].Quote = quote
 				}
 			}
 			if len(resp.Data.Greeks) > 0 {
-				c.dxlog.Info("SERVER <-", "greeks rec'd", resp.Data.Greeks[0], "size", len(resp.Data.Greeks))
+				c.outputServerMsg("greeks rec'd", resp.Data.Greeks[0], "size", len(resp.Data.Greeks))
 				for _, greek := range resp.Data.Greeks {
 					c.optionSubs[greek.Symbol].Greek = greek
+				}
+			}
+		case 5:
+			if len(resp.Data.Trades) > 0 {
+				c.outputServerMsg("trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
+				for _, trade := range resp.Data.Trades {
+					if _, ok := c.futuresSubs[trade.Symbol]; !ok {
+						c.futuresSubs[trade.Symbol] = NewFeedData().WithTrade()
+						c.futuresSubs[trade.Symbol].Trade = trade
+					}
+					c.futuresSubs[trade.Symbol].Trade = trade
 				}
 			}
 		}
@@ -429,10 +540,10 @@ func (c *DxLinkClient) processMessage(message []byte) {
 		resp := ErrorMsg{}
 		err := json.Unmarshal(message, &resp)
 		if err != nil {
-			c.dxlog.Error("unable to unmarshal error msg", "err", err)
+			c.outputMsg("unable to unmarshal error msg", "err", err)
 			return
 		}
-		c.dxlog.Info("SERVER <-", "", resp)
+		c.outputServerMsg("", resp)
 	case string(KeepAlive):
 		resp := KeepAliveMsg{}
 		err := json.Unmarshal(message, &resp)
@@ -440,66 +551,16 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			c.dxlog.Error("unable to unmarshal keepalive msg", "err", err)
 			return
 		}
-		c.dxlog.Info("SERVER <-", "", resp)
+		c.outputServerMsg("", resp)
 	default:
-		c.dxlog.Info("Unknown message type", "msg", string(message))
+		c.outputMsg("Unknown message type", "msg", string(message))
 	}
 }
 
-func (c *DxLinkClient) underlyingFeedSub() FeedSubscriptionMsg {
-	feedSub := FeedSubscriptionMsg{
-		Type:    FeedSubscription,
-		Channel: 1,
-		Reset:   true,
-		Add:     []FeedSubItem{},
-	}
-
-	for under := range c.underlyingSubs {
-		//feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: under})
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Trade", Symbol: under})
-	}
-	return feedSub
-}
-
-func (c *DxLinkClient) optionFeedSub() FeedSubscriptionMsg {
-	feedSub := FeedSubscriptionMsg{
-		Type:    FeedSubscription,
-		Channel: 3,
-		Reset:   true,
-		Add:     []FeedSubItem{},
-	}
-	for opt := range c.optionSubs {
-		//slog.Info("OptionFeedSub method", "OptionSub iter:", opt)
-		if len(feedSub.Add) >= 90 {
-			break
-		}
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: opt})
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Greeks", Symbol: opt})
-	}
-	return feedSub
-}
-
-func (c *DxLinkClient) optionFeedIter() iter.Seq[FeedSubscriptionMsg] {
-	return func(yield func(FeedSubscriptionMsg) bool) {
-		syms := slices.Collect(maps.Keys(c.optionSubs))
-		chunks := chunkSlice(syms, 45)
-
-		for _, c := range chunks {
-			feedSub := FeedSubscriptionMsg{
-				Type:    FeedSubscription,
-				Channel: 3,
-				Reset:   false,
-				Add:     []FeedSubItem{},
-			}
-			for _, v := range c {
-				feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: v})
-				feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Greeks", Symbol: v})
-			}
-			if !yield(feedSub) {
-				return
-			}
-		}
-	}
+func (c *DxLinkClient) ResetData() {
+	clear(c.optionSubs)
+	clear(c.underlyingSubs)
+	clear(c.futuresSubs)
 }
 
 func chunkSlice[T any](slice []T, chunkSize int) [][]T {
@@ -517,6 +578,20 @@ func chunkSlice[T any](slice []T, chunkSize int) [][]T {
 		chunks = append(chunks, slice[i:end])
 	}
 	return chunks
+}
+
+func (c *DxLinkClient) outputServerMsg(args ...any) {
+	c.outputMsg("SERVER <-", args...)
+}
+
+func (c *DxLinkClient) outputClientMsg(args ...any) {
+	c.outputMsg("CLIENT ->", args...)
+}
+
+func (c *DxLinkClient) outputMsg(prefix string, args ...any) {
+	if c.dxlog != nil {
+		c.dxlog.Info(prefix, args...)
+	}
 }
 
 func pprint(msg any) {

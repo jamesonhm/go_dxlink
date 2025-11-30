@@ -122,7 +122,7 @@ type FeedConfigMsg struct {
 	Channel           int             `json:"channel"`
 	AggregationPeriod float64         `json:"aggregationPeriod"`
 	DataFormat        FeedDataFormat  `json:"dataFormat"`
-	EventFields       FeedEventFields `json:"eventFields,omitempty"`
+	EventFields       FeedEventFields `json:"eventFields"`
 }
 
 type FeedEventFields struct {
@@ -187,43 +187,82 @@ type CandleEvent struct {
 	OpenInterest  *float64
 }
 
-type OptionData struct {
-	Quote QuoteEvent
-	Greek GreeksEvent
+type feedData struct {
+	Quote   QuoteEvent
+	Greek   GreeksEvent
+	Trade   TradeEvent
+	Candles map[int64]CandleEvent
 }
 
-func NewOptionData() *OptionData {
-	return &OptionData{
-		Quote: QuoteEvent{
-			BidPrice: new(float64),
-			AskPrice: new(float64),
-		},
-		Greek: GreeksEvent{
-			Price:      new(float64),
-			Volatility: new(float64),
-			Delta:      new(float64),
-			Gamma:      new(float64),
-			Theta:      new(float64),
-			Rho:        new(float64),
-			Vega:       new(float64),
-		},
+func NewFeedData() *feedData {
+	return &feedData{}
+}
+
+func (fd *feedData) WithQuote() *feedData {
+	fd.Quote = QuoteEvent{
+		BidPrice: new(float64),
+		AskPrice: new(float64),
 	}
+	return fd
 }
 
-type UnderlyingData struct {
-	Trade TradeEvent
-	//Candles map[int64]CandleEvent
-	//Candles []*CandleEvent
-}
-
-func NewUnderlying() *UnderlyingData {
-	return &UnderlyingData{
-		Trade: TradeEvent{
-			Price: new(float64),
-		},
-		//Candles: make(map[int64]CandleEvent),
+func (fd *feedData) WithTrade() *feedData {
+	fd.Trade = TradeEvent{
+		Price: new(float64),
 	}
+	return fd
 }
+
+func (fd *feedData) WithGreeks() *feedData {
+	fd.Greek = GreeksEvent{
+		Price:      new(float64),
+		Volatility: new(float64),
+		Delta:      new(float64),
+		Gamma:      new(float64),
+		Theta:      new(float64),
+		Rho:        new(float64),
+		Vega:       new(float64),
+	}
+	return fd
+}
+
+//type OptionData struct {
+//	Quote QuoteEvent
+//	Greek GreeksEvent
+//}
+//
+//func NewOptionData() *OptionData {
+//	return &OptionData{
+//		Quote: QuoteEvent{
+//			BidPrice: new(float64),
+//			AskPrice: new(float64),
+//		},
+//		Greek: GreeksEvent{
+//			Price:      new(float64),
+//			Volatility: new(float64),
+//			Delta:      new(float64),
+//			Gamma:      new(float64),
+//			Theta:      new(float64),
+//			Rho:        new(float64),
+//			Vega:       new(float64),
+//		},
+//	}
+//}
+//
+//type UnderlyingData struct {
+//	Trade TradeEvent
+//	//Candles map[int64]CandleEvent
+//	//Candles []*CandleEvent
+//}
+//
+//func NewUnderlying() *UnderlyingData {
+//	return &UnderlyingData{
+//		Trade: TradeEvent{
+//			Price: new(float64),
+//		},
+//		//Candles: make(map[int64]CandleEvent),
+//	}
+//}
 
 func jsonDouble(value interface{}) *float64 {
 	var jd *float64
@@ -234,16 +273,20 @@ func jsonDouble(value interface{}) *float64 {
 }
 
 func (d *ProcessedFeedData) UnmarshalJSON(data []byte) error {
+	fmt.Printf("unmarshal json for processed feed data\n")
 	var content []interface{}
 	if err := json.Unmarshal(data, &content); err != nil {
 		return err
 	}
 
+	fmt.Printf("content: %+v\n", content)
 	for i := 0; i < len(content); i += 2 {
 		typeName, ok := content[i].(string)
 		if !ok || i+1 >= len(content) {
+			fmt.Printf("not ok: %t, i+1 >= len(content): %t\n", !ok, i+1 >= len(content))
 			continue
 		}
+		fmt.Printf("i: %d, typeName: %s\n", i, typeName)
 
 		values, ok := content[i+1].([]interface{})
 		if !ok {
@@ -252,6 +295,7 @@ func (d *ProcessedFeedData) UnmarshalJSON(data []byte) error {
 
 		switch typeName {
 		case "Trade":
+			fmt.Printf("unmarshal json processed feed data, Trade type name\n")
 			for j := 0; j < len(values); j += 4 {
 				if j+3 > len(values) {
 					break

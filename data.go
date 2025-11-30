@@ -14,7 +14,7 @@ func (c *DxLinkClient) OptionDataByOffset(
 	offsetFrom float64,
 	offsetBy int,
 	holidays []time.Time,
-) (*OptionData, error) {
+) (*feedData, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -41,7 +41,7 @@ func (c *DxLinkClient) OptionDataByDelta(
 	round int,
 	targetDelta float64,
 	holidays []time.Time,
-) (*OptionData, error) {
+) (*feedData, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -54,7 +54,7 @@ func (c *DxLinkClient) OptionDataByDelta(
 
 	// find exp date
 	exp := DTEToDateHolidays(time.Now(), dte, holidays)
-	atm, err := c.getUnderlyingPrice(underlying)
+	atm, err := c.GetUnderlyingPrice(underlying)
 	if err != nil {
 		return nil, fmt.Errorf("OptionDataByDelta: unable to get underlying price for '%s'", underlying)
 	}
@@ -123,7 +123,7 @@ func (c *DxLinkClient) OptionDataByDelta(
 	return nil, fmt.Errorf("OptionDataByDelta: Max attempts reached\n")
 }
 
-func (c *DxLinkClient) getUnderlyingData(sym string) (*UnderlyingData, error) {
+func (c *DxLinkClient) GetUnderlyingData(sym string) (*feedData, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	delay := c.delay
@@ -141,8 +141,9 @@ func (c *DxLinkClient) getUnderlyingData(sym string) (*UnderlyingData, error) {
 	}
 	return nil, fmt.Errorf("unable to find underlying in subscription data or is nil: %s", sym)
 }
-func (c *DxLinkClient) getUnderlyingPrice(sym string) (float64, error) {
-	data, err := c.getUnderlyingData(sym)
+
+func (c *DxLinkClient) GetUnderlyingPrice(sym string) (float64, error) {
+	data, err := c.GetUnderlyingData(sym)
 	if err != nil {
 		return 0.0, err
 	}
@@ -151,10 +152,40 @@ func (c *DxLinkClient) getUnderlyingPrice(sym string) (float64, error) {
 	}
 	price := *data.Trade.Price
 	return price, nil
-
 }
 
-func (c *DxLinkClient) GetOptData(opt string) (*OptionData, error) {
+func (c *DxLinkClient) GetFuturesData(sym string) (*feedData, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	delay := c.delay
+	for i := 0; i < c.retries; i++ {
+		if futuresPtr, ok := c.futuresSubs[sym]; ok {
+			if futuresPtr != nil {
+				return futuresPtr, nil
+			}
+		}
+		fmt.Printf("Retrying getFuturesData, attempt %d, delay: %s\n", i+1, delay.String())
+		time.Sleep(delay)
+		if c.expBackoff {
+			delay *= 2
+		}
+	}
+	return nil, fmt.Errorf("unable to find futures in subscription data or is nil: %s", sym)
+}
+
+func (c *DxLinkClient) GetFuturesPrice(sym string) (float64, error) {
+	data, err := c.GetFuturesData(sym)
+	if err != nil {
+		return 0.0, err
+	}
+	if data.Trade.Price == nil {
+		return 0, fmt.Errorf("futuresData.Trade.Price is a nil ptr")
+	}
+	price := *data.Trade.Price
+	return price, nil
+}
+
+func (c *DxLinkClient) GetOptData(opt string) (*feedData, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	delay := c.delay
