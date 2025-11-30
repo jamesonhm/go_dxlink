@@ -273,20 +273,17 @@ func jsonDouble(value interface{}) *float64 {
 }
 
 func (d *ProcessedFeedData) UnmarshalJSON(data []byte) error {
-	fmt.Printf("unmarshal json for processed feed data\n")
 	var content []interface{}
 	if err := json.Unmarshal(data, &content); err != nil {
 		return err
 	}
 
-	fmt.Printf("content: %+v\n", content)
 	for i := 0; i < len(content); i += 2 {
 		typeName, ok := content[i].(string)
 		if !ok || i+1 >= len(content) {
 			fmt.Printf("not ok: %t, i+1 >= len(content): %t\n", !ok, i+1 >= len(content))
 			continue
 		}
-		fmt.Printf("i: %d, typeName: %s\n", i, typeName)
 
 		values, ok := content[i+1].([]interface{})
 		if !ok {
@@ -295,7 +292,6 @@ func (d *ProcessedFeedData) UnmarshalJSON(data []byte) error {
 
 		switch typeName {
 		case "Trade":
-			fmt.Printf("unmarshal json processed feed data, Trade type name\n")
 			for j := 0; j < len(values); j += 4 {
 				if j+3 > len(values) {
 					break

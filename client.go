@@ -36,8 +36,7 @@ type DxLinkClient struct {
 	optionSubs     map[string]*feedData
 	underlyingSubs map[string]*feedData
 	futuresSubs    map[string]*feedData
-	// Unused
-	callbacks map[string]MessageCallback
+	futuresEvent   chan ProcessedFeedData
 }
 
 func New(ctx context.Context, url string, token string) *DxLinkClient {
@@ -76,20 +75,26 @@ func (c *DxLinkClient) WithOptionSubs(
 	return c
 }
 
-func (c *DxLinkClient) WithUnderlying(symbol string) {
+func (c *DxLinkClient) WithUnderlying(symbol string) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.underlyingSubs = make(map[string]*feedData)
 	c.underlyingSubs[symbol] = NewFeedData().WithTrade()
+
+	return c
 }
 
-func (c *DxLinkClient) WithFuture(symbol string) {
+func (c *DxLinkClient) WithFuture(symbol string) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.futuresSubs = make(map[string]*feedData)
 	c.futuresSubs[symbol] = NewFeedData().WithTrade()
+
+	c.futuresEvent = make(chan ProcessedFeedData)
+
+	return c
 }
 
 // creates the struct that the "FEED_SUBSCRIPTION" message is based on
@@ -267,6 +272,9 @@ func (c *DxLinkClient) reconnect() {
 func (c *DxLinkClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	slog.Info("closing channel")
+	close(c.futuresEvent)
 
 	slog.Info("Closing DxLink WS connection")
 	if !c.connected {
@@ -535,6 +543,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 					c.futuresSubs[trade.Symbol].Trade = trade
 				}
 			}
+			c.produceFuturesData(resp.Data)
 		}
 	case string(Error):
 		resp := ErrorMsg{}
@@ -555,6 +564,29 @@ func (c *DxLinkClient) processMessage(message []byte) {
 	default:
 		c.outputMsg("Unknown message type", "msg", string(message))
 	}
+}
+
+func (c *DxLinkClient) produceFuturesData(data ProcessedFeedData) {
+	select {
+	case c.futuresEvent <- data:
+		// successfully sent
+	default:
+		select {
+		case <-c.futuresEvent:
+			// drain an old value
+		default:
+		}
+		// try sending again
+		select {
+		case c.futuresEvent <- data:
+		default:
+			// still full, value dropped
+		}
+	}
+}
+
+func (c *DxLinkClient) FuturesEventProducer() <-chan ProcessedFeedData {
+	return c.futuresEvent
 }
 
 func (c *DxLinkClient) ResetData() {
