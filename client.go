@@ -31,6 +31,10 @@ type DxLinkClient struct {
 	delay          time.Duration
 	expBackoff     bool
 
+	equities bool
+	options  bool
+	futures  bool
+
 	// Optional
 	dxlog          *slog.Logger
 	optionSubs     map[string]*feedData
@@ -49,6 +53,9 @@ func New(ctx context.Context, url string, token string) *DxLinkClient {
 		retries:    3,
 		delay:      1 * time.Second,
 		expBackoff: false,
+		equities:   false,
+		options:    false,
+		futures:    false,
 	}
 }
 
@@ -72,6 +79,7 @@ func (c *DxLinkClient) WithOptionSubs(
 	for _, option := range filtered {
 		c.optionSubs[option] = NewFeedData().WithGreeks().WithQuote()
 	}
+	c.options = true
 	return c
 }
 
@@ -82,6 +90,7 @@ func (c *DxLinkClient) WithUnderlying(symbol string) *DxLinkClient {
 	c.underlyingSubs = make(map[string]*feedData)
 	c.underlyingSubs[symbol] = NewFeedData().WithTrade()
 
+	c.equities = true
 	return c
 }
 
@@ -93,6 +102,7 @@ func (c *DxLinkClient) WithFuture(symbol string) *DxLinkClient {
 	c.futuresSubs[symbol] = NewFeedData().WithTrade()
 
 	c.futuresEvent = make(chan ProcessedFeedData)
+	c.futures = true
 
 	return c
 }
@@ -401,27 +411,44 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			}
 			c.sendMessage(authMsg)
 		} else if resp.State == "AUTHORIZED" {
-			// setup a channel for underlying (indices, equities) and options
-			chanReq := ChannelReqRespMsg{
-				Type:    ChannelRequest,
-				Channel: 1,
-				Service: FeedService,
-				Parameters: Parameters{
-					Contract: ChannelAuto,
-				},
+			if c.equities {
+				// setup a channel for underlying (indices, equities) and options
+				chanReq := ChannelReqRespMsg{
+					Type:    ChannelRequest,
+					Channel: 1,
+					Service: FeedService,
+					Parameters: Parameters{
+						Contract: ChannelAuto,
+					},
+				}
+				c.sendMessage(chanReq)
 			}
-			c.sendMessage(chanReq)
 
-			// setup a channel for options
-			chanReq = ChannelReqRespMsg{
-				Type:    ChannelRequest,
-				Channel: 3,
-				Service: FeedService,
-				Parameters: Parameters{
-					Contract: ChannelAuto,
-				},
+			if c.options {
+				// setup a channel for options
+				chanReq := ChannelReqRespMsg{
+					Type:    ChannelRequest,
+					Channel: 3,
+					Service: FeedService,
+					Parameters: Parameters{
+						Contract: ChannelAuto,
+					},
+				}
+				c.sendMessage(chanReq)
 			}
-			c.sendMessage(chanReq)
+
+			if c.futures {
+				// setup a channel for futures
+				chanReq := ChannelReqRespMsg{
+					Type:    ChannelRequest,
+					Channel: 5,
+					Service: FeedService,
+					Parameters: Parameters{
+						Contract: ChannelAuto,
+					},
+				}
+				c.sendMessage(chanReq)
+			}
 		}
 	case string(ChannelOpened):
 		resp := ChannelReqRespMsg{}
