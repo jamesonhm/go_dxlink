@@ -384,7 +384,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			slog.Error("unable to unmarshal setup msg")
 			return
 		}
-		c.dxlog.Info("SERVER <-", "", resp)
+		c.outputServerMsg("", resp)
 	case string(AuthState):
 		resp := AuthStateMsg{}
 		err := json.Unmarshal(message, &resp)
@@ -568,7 +568,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 		resp := KeepAliveMsg{}
 		err := json.Unmarshal(message, &resp)
 		if err != nil {
-			c.dxlog.Error("unable to unmarshal keepalive msg", "err", err)
+			c.outputMsg("unable to unmarshal keepalive msg", "err", err)
 			return
 		}
 		c.outputServerMsg("", resp)
