@@ -474,7 +474,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			// FUTURES
 			feedSetup = FeedSetupMsg{
 				Type:                    FeedSetup,
-				Channel:                 1,
+				Channel:                 5,
 				AcceptAggregationPeriod: 60,
 				AcceptDataFormat:        CompactFormat,
 				AcceptEventFields: FeedEventFields{
@@ -499,7 +499,6 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			feedSub = c.underlyingFeedSub()
 			c.sendMessage(feedSub)
 		case 3:
-			fmt.Println("Channel 3 response, getting option feed subs")
 			//feedSub = c.optionFeedSub()
 			for m := range c.optionFeedIter() {
 				c.sendMessage(m)
@@ -545,7 +544,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			}
 		case 5:
 			if len(resp.Data.Trades) > 0 {
-				c.outputServerMsg("trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
+				c.outputServerMsg("futures trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
 				for _, trade := range resp.Data.Trades {
 					if _, ok := c.futuresSubs[trade.Symbol]; !ok {
 						c.futuresSubs[trade.Symbol] = NewFeedData().WithTrade()

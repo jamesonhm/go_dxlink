@@ -161,6 +161,22 @@ type TradeEvent struct {
 	Size      *float64
 }
 
+func (te TradeEvent) String() string {
+	var p, s float64
+
+	if te.Price == nil {
+		p = 0.0
+	} else {
+		p = *te.Price
+	}
+	if te.Size == nil {
+		s = 0.0
+	} else {
+		s = *te.Size
+	}
+	return fmt.Sprintf("EventType: %s, Symbol: %s, Price: %.2f, Size: %.0f", te.EventType, te.Symbol, p, s)
+}
+
 // Greeks event is a snapshot of the option price, Black-Scholes volatility and greeks
 type GreeksEvent struct {
 	EventType  string
