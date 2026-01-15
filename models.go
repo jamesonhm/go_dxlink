@@ -242,44 +242,6 @@ func (fd *feedData) WithGreeks() *feedData {
 	return fd
 }
 
-//type OptionData struct {
-//	Quote QuoteEvent
-//	Greek GreeksEvent
-//}
-//
-//func NewOptionData() *OptionData {
-//	return &OptionData{
-//		Quote: QuoteEvent{
-//			BidPrice: new(float64),
-//			AskPrice: new(float64),
-//		},
-//		Greek: GreeksEvent{
-//			Price:      new(float64),
-//			Volatility: new(float64),
-//			Delta:      new(float64),
-//			Gamma:      new(float64),
-//			Theta:      new(float64),
-//			Rho:        new(float64),
-//			Vega:       new(float64),
-//		},
-//	}
-//}
-//
-//type UnderlyingData struct {
-//	Trade TradeEvent
-//	//Candles map[int64]CandleEvent
-//	//Candles []*CandleEvent
-//}
-//
-//func NewUnderlying() *UnderlyingData {
-//	return &UnderlyingData{
-//		Trade: TradeEvent{
-//			Price: new(float64),
-//		},
-//		//Candles: make(map[int64]CandleEvent),
-//	}
-//}
-
 func jsonDouble(value interface{}) *float64 {
 	var jd *float64
 	if v, ok := value.(float64); ok {

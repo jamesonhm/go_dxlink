@@ -39,6 +39,14 @@ type DxLinkClient struct {
 	futuresEvent   chan ProcessedFeedData
 }
 
+type SubscriptionConfig struct {
+	Symbols     []string
+	EventTypes  []string // "Quote", "Trade", "Greeks", ...
+	Channel     int
+	Contract    ChannelContract
+	EventFields map[string][]string // event type -> field names
+}
+
 func New(ctx context.Context, url string, token string) *DxLinkClient {
 	ctx, cancel := context.WithCancel(ctx)
 	return &DxLinkClient{
@@ -52,50 +60,89 @@ func New(ctx context.Context, url string, token string) *DxLinkClient {
 	}
 }
 
+// ----- Builder Methods -----
 func (c *DxLinkClient) WithLogger(logger *slog.Logger) *DxLinkClient {
 	c.dxlog = logger
 	return c
 }
 
-func (c *DxLinkClient) WithOptionSubs(
-	symbol string,
-	options []string,
-	mktPrice float64,
-	pctRange float64,
-	filter filterFunc,
-) *DxLinkClient {
+func (c *DxLinkClient) WithSubscription(config SubscriptionConfig) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.optionSubs = make(map[string]*feedData)
-	filtered := filter(options, mktPrice, pctRange)
-	for _, option := range filtered {
-		c.optionSubs[option] = NewFeedData().WithGreeks().WithQuote()
+	// Initialize the subscription map (based on channel or type?)
+	for _, symbol := range config.Symbols {
+		feedData := NewFeedData()
+
+		for _, eventType := range config.EventTypes {
+			switch eventType {
+			case "Quote":
+				feedData.WithQuote()
+			case "Trade":
+				feedData.WithTrade()
+			case "Greeks":
+				feedData.WithGreeks()
+				// TODO: add other event types
+			}
+		}
+
+		// store in map
+		c.storeSubscription(config.Channel, symbol, feedData)
 	}
-	return c
-}
-
-func (c *DxLinkClient) WithUnderlying(symbol string) *DxLinkClient {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	c.underlyingSubs = make(map[string]*feedData)
-	c.underlyingSubs[symbol] = NewFeedData().WithTrade()
 
 	return c
 }
 
-func (c *DxLinkClient) WithFuture(symbol string) *DxLinkClient {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// Convenience methods for common configs
+func (c *DxLinkClient) WithEquities(symbols ...string) *DxLinkClient {
+	//c.underlyingSubs = make(map[string]*feedData)
+	//c.underlyingSubs[symbol] = NewFeedData().WithTrade()
+	return c.WithSubscription(SubscriptionConfig{
+		Symbols:    symbols,
+		EventTypes: []string{"Trade"},
+		Channel:    1,
+		Contract:   ChannelAuto,
+	})
+}
 
-	c.futuresSubs = make(map[string]*feedData)
-	c.futuresSubs[symbol] = NewFeedData().WithTrade()
+func (c *DxLinkClient) WithOptions(symbols ...string) *DxLinkClient {
+	return c.WithSubscription(SubscriptionConfig{
+		Symbols:    symbols,
+		EventTypes: []string{"Quote", "Greek"},
+		Channel:    3,
+		Contract:   ChannelAuto,
+	})
+}
 
+func (c *DxLinkClient) WithFuture(symbols ...string) *DxLinkClient {
+	//c.futuresSubs = make(map[string]*feedData)
+	//c.futuresSubs[symbol] = NewFeedData().WithTrade()
 	c.futuresEvent = make(chan ProcessedFeedData)
 
-	return c
+	return c.WithSubscription(SubscriptionConfig{
+		Symbols:    symbols,
+		EventTypes: []string{"Trade"},
+		Channel:    5,
+		Contract:   ChannelAuto,
+	})
 }
+
+//func (c *DxLinkClient) WithOptionSubs(
+//	options []string,
+//	mktPrice float64,
+//	pctRange float64,
+//	filter filterFunc,
+//) *DxLinkClient {
+//	c.mu.Lock()
+//	defer c.mu.Unlock()
+//
+//	c.optionSubs = make(map[string]*feedData)
+//	filtered := filter(options, mktPrice, pctRange)
+//	for _, option := range filtered {
+//		c.optionSubs[option] = NewFeedData().WithGreeks().WithQuote()
+//	}
+//	return c
+//}
 
 // creates the struct that the "FEED_SUBSCRIPTION" message is based on
 func (c *DxLinkClient) underlyingFeedSub() FeedSubscriptionMsg {
