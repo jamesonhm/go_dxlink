@@ -16,7 +16,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type filterFunc func(rawOptions []string, mktPrice float64, pctRange float64) []string
+// ChannelConfig holds config for a specific channel
+type ChannelConfig struct {
+	Channel           int
+	Contract          ChannelContract
+	AggregationPeriod int
+	DataFormat        FeedDataFormat
+	EventFields       map[string][]string  // event type -> field names
+	Symbols           map[string]*feedData // symbol -> feedData
+	pendingSubs       []FeedSubItem        // Items not yet sent to server
+}
 
 type DxLinkClient struct {
 	conn           *websocket.Conn
@@ -32,31 +41,29 @@ type DxLinkClient struct {
 	expBackoff     bool
 
 	// Optional
-	dxlog          *slog.Logger
-	optionSubs     map[string]*feedData
-	underlyingSubs map[string]*feedData
-	futuresSubs    map[string]*feedData
-	futuresEvent   chan ProcessedFeedData
-}
+	dxlog *slog.Logger
 
-type SubscriptionConfig struct {
-	Symbols     []string
-	EventTypes  []string // "Quote", "Trade", "Greeks", ...
-	Channel     int
-	Contract    ChannelContract
-	EventFields map[string][]string // event type -> field names
+	//Channel-based subscription management
+	channels      map[int]*ChannelConfig
+	futuresEvent  chan ProcessedFeedData
+	dataCallbacks map[int]func(ProcessedFeedData) // Channel -> callback
+	//optionSubs     map[string]*feedData
+	//underlyingSubs map[string]*feedData
+	//futuresSubs    map[string]*feedData
 }
 
 func New(ctx context.Context, url string, token string) *DxLinkClient {
 	ctx, cancel := context.WithCancel(ctx)
 	return &DxLinkClient{
-		url:        url,
-		ctx:        ctx,
-		cancel:     cancel,
-		token:      token,
-		retries:    3,
-		delay:      1 * time.Second,
-		expBackoff: false,
+		url:           url,
+		ctx:           ctx,
+		cancel:        cancel,
+		token:         token,
+		retries:       3,
+		delay:         1 * time.Second,
+		expBackoff:    false,
+		channels:      make(map[int]*ChannelConfig),
+		dataCallbacks: make(map[int]func(ProcessedFeedData)),
 	}
 }
 
@@ -66,15 +73,54 @@ func (c *DxLinkClient) WithLogger(logger *slog.Logger) *DxLinkClient {
 	return c
 }
 
-func (c *DxLinkClient) WithSubscription(config SubscriptionConfig) *DxLinkClient {
+func (c *DxLinkClient) WithSubscription(config ChannelConfig) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// Initialize the subscription map (based on channel or type?)
-	for _, symbol := range config.Symbols {
+	if config.Symbols == nil {
+		config.Symbols = make(map[string]*feedData)
+	}
+
+	// Set defaults if not provided
+	if config.AggregationPeriod == 0 {
+		config.AggregationPeriod = 60
+	}
+
+	c.channels[config.Channel] = &config
+	return c
+}
+
+func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...string) *DxLinkClient {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Get or create channel config
+	channelCfg, exists := c.channels[channel]
+	if !exists {
+		// Auto-create channel with defaults
+		channelCfg = &ChannelConfig{
+			Channel:           channel,
+			Contract:          ChannelAuto,
+			AggregationPeriod: 60,
+			DataFormat:        CompactFormat,
+			EventFields:       make(map[string][]string),
+			Symbols:           make(map[string]*feedData),
+		}
+		c.channels[channel] = channelCfg
+	}
+
+	// Add default event fields if not already configured
+	for _, eventType := range eventTypes {
+		if _, exists := channelCfg.EventFields[eventType]; !exists {
+			channelCfg.EventFields[eventType] = getDefaultEventFields(eventType)
+		}
+	}
+
+	// Add Symbols
+	for _, symbol := range symbols {
 		feedData := NewFeedData()
 
-		for _, eventType := range config.EventTypes {
+		for _, eventType := range eventTypes {
 			switch eventType {
 			case "Quote":
 				feedData.WithQuote()
@@ -82,12 +128,20 @@ func (c *DxLinkClient) WithSubscription(config SubscriptionConfig) *DxLinkClient
 				feedData.WithTrade()
 			case "Greeks":
 				feedData.WithGreeks()
-				// TODO: add other event types
+			case "Candle":
+				feedData.WithCandles()
 			}
 		}
 
-		// store in map
-		c.storeSubscription(config.Channel, symbol, feedData)
+		channelCfg.Symbols[symbol] = feedData
+
+		// Add to pending subscriptions
+		for _, eventType := range eventTypes {
+			channelCfg.pendingSubs = append(channelCfg.pendingSubs, FeedSubItem{
+				Type:   eventType,
+				Symbol: symbol,
+			})
+		}
 	}
 
 	return c
@@ -126,23 +180,6 @@ func (c *DxLinkClient) WithFuture(symbols ...string) *DxLinkClient {
 		Contract:   ChannelAuto,
 	})
 }
-
-//func (c *DxLinkClient) WithOptionSubs(
-//	options []string,
-//	mktPrice float64,
-//	pctRange float64,
-//	filter filterFunc,
-//) *DxLinkClient {
-//	c.mu.Lock()
-//	defer c.mu.Unlock()
-//
-//	c.optionSubs = make(map[string]*feedData)
-//	filtered := filter(options, mktPrice, pctRange)
-//	for _, option := range filtered {
-//		c.optionSubs[option] = NewFeedData().WithGreeks().WithQuote()
-//	}
-//	return c
-//}
 
 // creates the struct that the "FEED_SUBSCRIPTION" message is based on
 func (c *DxLinkClient) underlyingFeedSub() FeedSubscriptionMsg {
@@ -680,6 +717,21 @@ func (c *DxLinkClient) outputClientMsg(args ...any) {
 func (c *DxLinkClient) outputMsg(prefix string, args ...any) {
 	if c.dxlog != nil {
 		c.dxlog.Info(prefix, args...)
+	}
+}
+
+func getDefaultEventFields(eventType string) []string {
+	switch eventType {
+	case "Quote":
+		return []string{"eventType", "eventSymbol", "bidPrice", "askPrice"}
+	case "Trade":
+		return []string{"eventType", "eventSymbol", "price", "size"}
+	case "Greeks":
+		return []string{"eventType", "eventSymbol", "price", "volatility", "delta", "gamma", "theta", "rho", "vega"}
+	case "Candle":
+		return []string{"eventType", "eventSymbol", "time", "open", "high", "low", "close", "volume", "impVolatility", "openInterest"}
+	default:
+		return []string{}
 	}
 }
 

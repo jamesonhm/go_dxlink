@@ -242,6 +242,11 @@ func (fd *feedData) WithGreeks() *feedData {
 	return fd
 }
 
+func (fd *feedData) WithCandles() *feedData {
+	fd.Candles = make(map[int64]CandleEvent)
+	return fd
+}
+
 func jsonDouble(value interface{}) *float64 {
 	var jd *float64
 	if v, ok := value.(float64); ok {
