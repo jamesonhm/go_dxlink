@@ -4,12 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"iter"
 	"log/slog"
-	"maps"
 	"net/url"
-	"slices"
-
 	"sync"
 	"time"
 
@@ -47,9 +43,6 @@ type DxLinkClient struct {
 	channels      map[int]*ChannelConfig
 	futuresEvent  chan ProcessedFeedData
 	dataCallbacks map[int]func(ProcessedFeedData) // Channel -> callback
-	//optionSubs     map[string]*feedData
-	//underlyingSubs map[string]*feedData
-	//futuresSubs    map[string]*feedData
 }
 
 func New(ctx context.Context, url string, token string) *DxLinkClient {
@@ -73,7 +66,8 @@ func (c *DxLinkClient) WithLogger(logger *slog.Logger) *DxLinkClient {
 	return c
 }
 
-func (c *DxLinkClient) WithSubscription(config ChannelConfig) *DxLinkClient {
+// WithChannel configures a channel with its settings
+func (c *DxLinkClient) WithChannel(config ChannelConfig) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -84,6 +78,16 @@ func (c *DxLinkClient) WithSubscription(config ChannelConfig) *DxLinkClient {
 	// Set defaults if not provided
 	if config.AggregationPeriod == 0 {
 		config.AggregationPeriod = 60
+	}
+	if config.Contract == "" {
+		config.Contract = ChannelAuto
+	}
+	// MUST use compact format
+	config.DataFormat = CompactFormat
+
+	// always use default event fields
+	for eventType, _ := range config.EventFields {
+		config.EventFields[eventType] = getDefaultEventFields(eventType)
 	}
 
 	c.channels[config.Channel] = &config
@@ -147,17 +151,22 @@ func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...s
 	return c
 }
 
-// Convenience methods for common configs
+// Convenience methods for equity subscriptions
+// Equities use channel 1 by default
 func (c *DxLinkClient) WithEquities(symbols ...string) *DxLinkClient {
 	//c.underlyingSubs = make(map[string]*feedData)
 	//c.underlyingSubs[symbol] = NewFeedData().WithTrade()
 	return c.AddSymbols(1, []string{"Trade"}, symbols...)
 }
 
+// Convenience methods for options subscriptions
+// Options use channel 3 by default
 func (c *DxLinkClient) WithOptions(symbols ...string) *DxLinkClient {
 	return c.AddSymbols(3, []string{"Quote", "Greeks"}, symbols...)
 }
 
+// Convenience methods for futures subscriptions
+// Futures use channel 5 by default
 func (c *DxLinkClient) WithFuture(symbols ...string) *DxLinkClient {
 	c.futuresEvent = make(chan ProcessedFeedData)
 
@@ -172,79 +181,9 @@ func (c *DxLinkClient) WithDataCallback(channel int, callback func(ProcessedFeed
 	return c
 }
 
-// creates the struct that the "FEED_SUBSCRIPTION" message is based on
-func (c *DxLinkClient) underlyingFeedSub() FeedSubscriptionMsg {
-	feedSub := FeedSubscriptionMsg{
-		Type:    FeedSubscription,
-		Channel: 1,
-		Reset:   true,
-		Add:     []FeedSubItem{},
-	}
-
-	for under := range c.underlyingSubs {
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Trade", Symbol: under})
-	}
-	return feedSub
-}
-
-func (c *DxLinkClient) optionFeedSub() FeedSubscriptionMsg {
-	feedSub := FeedSubscriptionMsg{
-		Type:    FeedSubscription,
-		Channel: 3,
-		Reset:   true,
-		Add:     []FeedSubItem{},
-	}
-	for opt := range c.optionSubs {
-		if len(feedSub.Add) >= 90 {
-			break
-		}
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: opt})
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Greeks", Symbol: opt})
-	}
-	return feedSub
-}
-
-func (c *DxLinkClient) optionFeedIter() iter.Seq[FeedSubscriptionMsg] {
-	return func(yield func(FeedSubscriptionMsg) bool) {
-		syms := slices.Collect(maps.Keys(c.optionSubs))
-		chunks := chunkSlice(syms, 45)
-
-		for _, c := range chunks {
-			feedSub := FeedSubscriptionMsg{
-				Type:    FeedSubscription,
-				Channel: 3,
-				Reset:   false,
-				Add:     []FeedSubItem{},
-			}
-			for _, v := range c {
-				feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Quote", Symbol: v})
-				feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Greeks", Symbol: v})
-			}
-			if !yield(feedSub) {
-				return
-			}
-		}
-	}
-}
-
-// creates the struct that the "FEED_SUBSCRIPTION" message is based on
-func (c *DxLinkClient) futureFeedSub() FeedSubscriptionMsg {
-	feedSub := FeedSubscriptionMsg{
-		Type:    FeedSubscription,
-		Channel: 5,
-		Reset:   true,
-		Add:     []FeedSubItem{},
-	}
-
-	for under := range c.futuresSubs {
-		feedSub.Add = append(feedSub.Add, FeedSubItem{Type: "Trade", Symbol: under})
-	}
-	return feedSub
-}
-
 func (c *DxLinkClient) LenSubscriptions(channel int) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	if channelCfg, exists := c.channels[channel]; exists {
 		return len(channelCfg.Symbols)
 	}
@@ -355,17 +294,17 @@ func (c *DxLinkClient) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	slog.Info("closing output channels")
-	if c.futuresEvent != nil {
-		close(c.futuresEvent)
-	}
-
 	slog.Info("Closing DxLink WS connection")
 	if !c.connected {
 		return fmt.Errorf("client not connected")
 	}
 
 	c.cancel()
+
+	slog.Info("closing output channels")
+	if c.futuresEvent != nil {
+		close(c.futuresEvent)
+	}
 
 	err := c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 	if err != nil {
@@ -487,7 +426,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			}
 			c.sendMessage(authMsg)
 		} else if resp.State == "AUTHORIZED" {
-			c.mu.Lock()
+			c.mu.RLock()
 			for channelID, channelCfg := range c.channels {
 				chanReq := ChannelReqRespMsg{
 					Type:    ChannelRequest,
@@ -499,7 +438,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 				}
 				c.sendMessage(chanReq)
 			}
-			c.mu.Unlock()
+			c.mu.RUnlock()
 		}
 	case string(ChannelOpened):
 		resp := ChannelReqRespMsg{}
@@ -528,17 +467,6 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			AcceptEventFields:       convertToFeedEventFields(channelCfg.EventFields),
 		}
 		c.sendMessage(feedSetup)
-		//feedSetup = FeedSetupMsg{
-		//	Type:                    FeedSetup,
-		//	Channel:                 1,
-		//	AcceptAggregationPeriod: 60,
-		//	AcceptDataFormat:        CompactFormat,
-		//	AcceptEventFields: FeedEventFields{
-		//		//Quote: []string{"eventType", "eventSymbol", "bidPrice", "askPrice"},
-		//		Trade: []string{"eventType", "eventSymbol", "price", "size"},
-		//		//Candle: []string{"eventType", "eventSymbol", "time", "open", "high", "low", "close", "volume", "impVolatility", "openInterest"},
-		//	},
-		//}
 	case string(FeedConfig):
 		resp := FeedConfigMsg{}
 		err := json.Unmarshal(message, &resp)
@@ -564,16 +492,6 @@ func (c *DxLinkClient) processMessage(message []byte) {
 		channelCfg.pendingSubs = nil
 		c.mu.Unlock()
 
-		//switch resp.Channel {
-		//case 1:
-		//	feedSub = c.underlyingFeedSub()
-		//	c.sendMessage(feedSub)
-		//case 3:
-		//	//feedSub = c.optionFeedSub()
-		//	for m := range c.optionFeedIter() {
-		//		c.sendMessage(m)
-		//	}
-		//}
 	case string(FeedData):
 		resp := FeedDataMsg{}
 		err := json.Unmarshal(message, &resp)
@@ -585,45 +503,6 @@ func (c *DxLinkClient) processMessage(message []byte) {
 
 		c.processFeedData(resp.Channel, resp.Data)
 
-		//c.mu.Lock()
-		//defer c.mu.Unlock()
-		//switch resp.Channel {
-		//case 1:
-		//	if len(resp.Data.Trades) > 0 {
-		//		c.outputServerMsg("trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
-		//		for _, trade := range resp.Data.Trades {
-		//			if _, ok := c.underlyingSubs[trade.Symbol]; !ok {
-		//				c.underlyingSubs[trade.Symbol] = NewFeedData().WithTrade()
-		//			}
-		//			c.underlyingSubs[trade.Symbol].Trade = trade
-		//		}
-		//	}
-		//case 3:
-		//	if len(resp.Data.Quotes) > 0 {
-		//		c.outputServerMsg("quotes rec'd", resp.Data.Quotes[0], "size", len(resp.Data.Quotes))
-		//		for _, quote := range resp.Data.Quotes {
-		//			c.optionSubs[quote.Symbol].Quote = quote
-		//		}
-		//	}
-		//	if len(resp.Data.Greeks) > 0 {
-		//		c.outputServerMsg("greeks rec'd", resp.Data.Greeks[0], "size", len(resp.Data.Greeks))
-		//		for _, greek := range resp.Data.Greeks {
-		//			c.optionSubs[greek.Symbol].Greek = greek
-		//		}
-		//	}
-		//case 5:
-		//	if len(resp.Data.Trades) > 0 {
-		//		c.outputServerMsg("futures trades rec'd", resp.Data.Trades[0], "trades", len(resp.Data.Trades))
-		//		for _, trade := range resp.Data.Trades {
-		//			if _, ok := c.futuresSubs[trade.Symbol]; !ok {
-		//				c.futuresSubs[trade.Symbol] = NewFeedData().WithTrade()
-		//				c.futuresSubs[trade.Symbol].Trade = trade
-		//			}
-		//			c.futuresSubs[trade.Symbol].Trade = trade
-		//		}
-		//	}
-		//	c.produceFuturesData(resp.Data)
-		//}
 	case string(Error):
 		resp := ErrorMsg{}
 		err := json.Unmarshal(message, &resp)
@@ -707,6 +586,26 @@ func (c *DxLinkClient) processFeedData(channel int, data ProcessedFeedData) {
 	}
 }
 
+func (c *DxLinkClient) sendSubscriptionsInChunks(channel int, items []FeedSubItem) {
+	const chunkSize = 45 // Max items per subscription message
+
+	for i := 0; i < len(items); i += chunkSize {
+		end := i + chunkSize
+		if end > len(items) {
+			end = len(items)
+		}
+
+		feedSub := FeedSubscriptionMsg{
+			Type:    FeedSubscription,
+			Channel: channel,
+			Reset:   i == 0, // Only reset on first chunk
+			Add:     items[i:end],
+		}
+
+		c.sendMessage(feedSub)
+	}
+}
+
 func (c *DxLinkClient) produceData(ch chan ProcessedFeedData, data ProcessedFeedData) {
 	select {
 	case ch <- data:
@@ -731,26 +630,12 @@ func (c *DxLinkClient) FuturesEventProducer() <-chan ProcessedFeedData {
 }
 
 func (c *DxLinkClient) ResetData() {
-	clear(c.optionSubs)
-	clear(c.underlyingSubs)
-	clear(c.futuresSubs)
-}
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
-func chunkSlice[T any](slice []T, chunkSize int) [][]T {
-	var chunks [][]T
-	if chunkSize <= 0 {
-		return chunks // Return empty if chunk size is invalid
+	for _, channelCfg := range c.channels {
+		clear(channelCfg.Symbols)
 	}
-
-	for i := 0; i < len(slice); i += chunkSize {
-		end := i + chunkSize
-		// Ensure the end index does not exceed the slice's length
-		if end > len(slice) {
-			end = len(slice)
-		}
-		chunks = append(chunks, slice[i:end])
-	}
-	return chunks
 }
 
 func (c *DxLinkClient) outputServerMsg(args ...any) {
@@ -780,6 +665,25 @@ func getDefaultEventFields(eventType string) []string {
 	default:
 		return []string{}
 	}
+}
+
+func convertToFeedEventFields(eventFields map[string][]string) FeedEventFields {
+	fef := FeedEventFields{}
+
+	if fields, ok := eventFields["Quote"]; ok {
+		fef.Quote = fields
+	}
+	if fields, ok := eventFields["Trade"]; ok {
+		fef.Trade = fields
+	}
+	if fields, ok := eventFields["Greeks"]; ok {
+		fef.Greeks = fields
+	}
+	if fields, ok := eventFields["Candle"]; ok {
+		fef.Candle = fields
+	}
+
+	return fef
 }
 
 func pprint(msg any) {
