@@ -154,8 +154,6 @@ func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...s
 // Convenience methods for equity subscriptions
 // Equities use channel 1 by default
 func (c *DxLinkClient) WithEquities(symbols ...string) *DxLinkClient {
-	//c.underlyingSubs = make(map[string]*feedData)
-	//c.underlyingSubs[symbol] = NewFeedData().WithTrade()
 	return c.AddSymbols(1, []string{"Trade"}, symbols...)
 }
 
@@ -167,7 +165,7 @@ func (c *DxLinkClient) WithOptions(symbols ...string) *DxLinkClient {
 
 // Convenience methods for futures subscriptions
 // Futures use channel 5 by default
-func (c *DxLinkClient) WithFuture(symbols ...string) *DxLinkClient {
+func (c *DxLinkClient) WithFutures(symbols ...string) *DxLinkClient {
 	c.futuresEvent = make(chan ProcessedFeedData)
 
 	return c.AddSymbols(5, []string{"Trade"}, symbols...)
@@ -179,6 +177,72 @@ func (c *DxLinkClient) WithDataCallback(channel int, callback func(ProcessedFeed
 	defer c.mu.Unlock()
 	c.dataCallbacks[channel] = callback
 	return c
+}
+
+// AddSubscription adds symbols to a channel after the client is connected
+func (c *DxLinkClient) AddSubscription(channel int, eventTypes []string, symbols ...string) error {
+	if !c.connected {
+		return fmt.Errorf("client not connected")
+	}
+
+	c.AddSymbols(channel, eventTypes, symbols...)
+
+	// Build and send subscription message
+	feedSub := FeedSubscriptionMsg{
+		Type:    FeedSubscription,
+		Channel: channel,
+		Reset:   false,
+		Add:     []FeedSubItem{},
+	}
+
+	for _, symbol := range symbols {
+		for _, eventType := range eventTypes {
+			feedSub.Add = append(feedSub.Add, FeedSubItem{
+				Type:   eventType,
+				Symbol: symbol,
+			})
+		}
+	}
+
+	return c.sendMessage(feedSub)
+}
+
+// RemoveSubscription removes symbols from a channel
+func (c *DxLinkClient) RemoveSubscription(channel int, eventTypes []string, symbols ...string) error {
+	if !c.connected {
+		return fmt.Errorf("client not connected")
+	}
+
+	c.mu.Lock()
+	channelCfg, exists := c.channels[channel]
+	if !exists {
+		c.mu.Unlock()
+		return fmt.Errorf("channel %d not configured", channel)
+	}
+
+	// Remove from local subscriptions
+	for _, symbol := range symbols {
+		delete(channelCfg.Symbols, symbol)
+	}
+	c.mu.Unlock()
+
+	// Build and send unsubscription message
+	feedSub := FeedSubscriptionMsg{
+		Type:    FeedSubscription,
+		Channel: channel,
+		Remove:  []FeedSubItem{},
+	}
+
+	for _, symbol := range symbols {
+		for _, eventType := range eventTypes {
+			feedSub.Remove = append(feedSub.Remove, FeedSubItem{
+				Type:   eventType,
+				Symbol: symbol,
+			})
+		}
+	}
+
+	return c.sendMessage(feedSub)
 }
 
 func (c *DxLinkClient) LenSubscriptions(channel int) int {
@@ -485,7 +549,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 			return
 		}
 		// Send subscription message in chunks
-		c.sendSubscriptionsInChunks(resp.Channel, channelCfg.pendingSubs)
+		c.sendSubscriptionsInChunks(resp.Channel, channelCfg.pendingSubs, 45)
 
 		// Clear pending subscriptions
 		c.mu.Lock()
@@ -586,8 +650,7 @@ func (c *DxLinkClient) processFeedData(channel int, data ProcessedFeedData) {
 	}
 }
 
-func (c *DxLinkClient) sendSubscriptionsInChunks(channel int, items []FeedSubItem) {
-	const chunkSize = 45 // Max items per subscription message
+func (c *DxLinkClient) sendSubscriptionsInChunks(channel int, items []FeedSubItem, chunkSize int) {
 
 	for i := 0; i < len(items); i += chunkSize {
 		end := i + chunkSize
