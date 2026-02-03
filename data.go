@@ -49,7 +49,7 @@ func (c *DxLinkClient) GetUnderlyingData(sym string) (*feedData, error) {
 	for i := 0; i < c.retries; i++ {
 		if channelCfg, ok := c.channels[1]; ok {
 			if underlyingPtr, ok := channelCfg.Symbols[sym]; ok {
-				if underlyingPtr != nil {
+				if underlyingPtr != nil && underlyingPtr.Trade.Price != nil {
 					return underlyingPtr, nil
 				}
 			}
@@ -58,7 +58,7 @@ func (c *DxLinkClient) GetUnderlyingData(sym string) (*feedData, error) {
 		// If not in channel 1, search all channels
 		for _, channelCfg := range c.channels {
 			if underlyingPtr, ok := channelCfg.Symbols[sym]; ok {
-				if underlyingPtr != nil {
+				if underlyingPtr != nil && underlyingPtr.Trade.Price != nil {
 					return underlyingPtr, nil
 				}
 			}
@@ -73,7 +73,7 @@ func (c *DxLinkClient) GetUnderlyingData(sym string) (*feedData, error) {
 			delay *= 2
 		}
 	}
-	return nil, fmt.Errorf("unable to find underlying in subscription data or is nil: %s", sym)
+	return nil, fmt.Errorf("unable to find underlying in subscription data or is nil ptr: %s", sym)
 }
 
 // GetUnderlyingPrice retrieves the current price for an underlying symbol
@@ -99,7 +99,7 @@ func (c *DxLinkClient) GetFuturesData(sym string) (*feedData, error) {
 		// Try channel 5 first
 		if channelCfg, ok := c.channels[5]; ok {
 			if futuresPtr, ok := channelCfg.Symbols[sym]; ok {
-				if futuresPtr != nil {
+				if futuresPtr != nil && futuresPtr.Trade.Price != nil {
 					return futuresPtr, nil
 				}
 			}
@@ -108,7 +108,7 @@ func (c *DxLinkClient) GetFuturesData(sym string) (*feedData, error) {
 		// If not in channel 5, search all
 		for _, channelCfg := range c.channels {
 			if futuresPtr, ok := channelCfg.Symbols[sym]; ok {
-				if futuresPtr != nil {
+				if futuresPtr != nil && futuresPtr.Trade.Price != nil {
 					return futuresPtr, nil
 				}
 			}
@@ -164,18 +164,40 @@ func (c *DxLinkClient) GetOptData(opt string) (*feedData, error) {
 					continue
 				}
 
+				// Validate required fields
+				if optionDataPtr.Greek.Delta == nil ||
+					*optionDataPtr.Greek.Delta == 0.0 ||
+					optionDataPtr.Quote.AskPrice == nil ||
+					*optionDataPtr.Quote.AskPrice == 0.0 ||
+					optionDataPtr.Quote.BidPrice == nil ||
+					*optionDataPtr.Quote.BidPrice == 0.0 {
+					c.mu.RUnlock()
+					delay = retry(i, delay)
+					c.mu.RLock()
+					continue
+				}
+
 				return optionDataPtr, nil
 			}
 		}
 
 		// if not in channel 3, search all channels
 		for _, channelCfg := range c.channels {
-			if optionsDataPtr, ok := channelCfg.Symbols[opt]; ok {
-				if optionsDataPtr == nil {
+			if optionDataPtr, ok := channelCfg.Symbols[opt]; ok {
+				if optionDataPtr == nil {
 					continue
 				}
 
-				return optionsDataPtr, nil
+				// Validate required fields
+				if optionDataPtr.Greek.Delta == nil ||
+					*optionDataPtr.Greek.Delta == 0.0 ||
+					optionDataPtr.Quote.AskPrice == nil ||
+					*optionDataPtr.Quote.AskPrice == 0.0 ||
+					optionDataPtr.Quote.BidPrice == nil ||
+					*optionDataPtr.Quote.BidPrice == 0.0 {
+					continue
+				}
+				return optionDataPtr, nil
 			}
 		}
 
@@ -290,7 +312,7 @@ func (c *DxLinkClient) OptionDataByDelta(
 			opt = tempOpt
 		}
 		dist = tempDist
-		if delta > targetDelta {
+		if delta >= targetDelta {
 			// decrement new temp opt
 			tempOpt = opt.NewRelative(-1 * float64(round))
 			delta, err = c.getOptDelta(tempOpt.DxLinkString())
