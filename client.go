@@ -15,9 +15,9 @@ import (
 // ChannelConfig holds config for a specific channel
 type ChannelConfig struct {
 	Channel           int
-	Contract          ChannelContract
+	contract          ChannelContract
 	AggregationPeriod int
-	DataFormat        FeedDataFormat
+	dataFormat        FeedDataFormat
 	EventFields       map[string][]string  // event type -> field names
 	Symbols           map[string]*feedData // symbol -> feedData
 	pendingSubs       []FeedSubItem        // Items not yet sent to server
@@ -35,6 +35,7 @@ type DxLinkClient struct {
 	retries        int
 	delay          time.Duration
 	expBackoff     bool
+	logging        bool
 
 	// Optional
 	dxlog *slog.Logger
@@ -55,6 +56,7 @@ func New(ctx context.Context, url string, token string) *DxLinkClient {
 		retries:       3,
 		delay:         1 * time.Second,
 		expBackoff:    false,
+		logging:       false,
 		channels:      make(map[int]*ChannelConfig),
 		dataCallbacks: make(map[int]func(ProcessedFeedData)),
 	}
@@ -63,6 +65,7 @@ func New(ctx context.Context, url string, token string) *DxLinkClient {
 // ----- Builder Methods -----
 func (c *DxLinkClient) WithLogger(logger *slog.Logger) *DxLinkClient {
 	c.dxlog = logger
+	c.logging = true
 	return c
 }
 
@@ -79,11 +82,10 @@ func (c *DxLinkClient) WithChannel(config ChannelConfig) *DxLinkClient {
 	if config.AggregationPeriod == 0 {
 		config.AggregationPeriod = 60
 	}
-	if config.Contract == "" {
-		config.Contract = ChannelAuto
-	}
+	// Use AUTO contract
+	config.contract = ChannelAuto
 	// MUST use compact format
-	config.DataFormat = CompactFormat
+	config.dataFormat = CompactFormat
 
 	// always use default event fields
 	for eventType, _ := range config.EventFields {
@@ -104,9 +106,9 @@ func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...s
 		// Auto-create channel with defaults
 		channelCfg = &ChannelConfig{
 			Channel:           channel,
-			Contract:          ChannelAuto,
+			contract:          ChannelAuto,
 			AggregationPeriod: 60,
-			DataFormat:        CompactFormat,
+			dataFormat:        CompactFormat,
 			EventFields:       make(map[string][]string),
 			Symbols:           make(map[string]*feedData),
 		}
@@ -497,7 +499,7 @@ func (c *DxLinkClient) processMessage(message []byte) {
 					Channel: channelID,
 					Service: FeedService,
 					Parameters: Parameters{
-						Contract: channelCfg.Contract,
+						Contract: channelCfg.contract,
 					},
 				}
 				c.sendMessage(chanReq)
