@@ -153,6 +153,24 @@ func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...s
 	return c
 }
 
+func (c *DxLinkClient) AddCandleSymbols(
+	channel int,
+	period int,
+	timeUnit TimeUnit,
+	fromTime int,
+	symbols ...string,
+) *DxLinkClient {
+	fmtSymbols := []string{}
+	for _, symbol := range symbols {
+		fmtSymbols = append(
+			fmtSymbols,
+			fmt.Sprintf("%s{=%d%s}", symbol, period, string(timeUnit)),
+		)
+	}
+
+	return c
+}
+
 // Convenience methods for equity subscriptions
 // Equities use channel 1 by default
 func (c *DxLinkClient) WithEquities(symbols ...string) *DxLinkClient {

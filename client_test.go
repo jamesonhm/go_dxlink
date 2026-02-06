@@ -79,7 +79,7 @@ func TestWithChannel(t *testing.T) {
 
 	config := ChannelConfig{
 		Channel:           1,
-		Contract:          ChannelAuto,
+		contract:          ChannelAuto,
 		AggregationPeriod: 30,
 		DataFormat:        FullFormat,
 		EventFields: map[string][]string{
@@ -93,7 +93,7 @@ func TestWithChannel(t *testing.T) {
 	assert.NotNil(t, client.channels[1])
 	assert.Equal(t, 30, client.channels[1].AggregationPeriod)
 	assert.Equal(t, CompactFormat, client.channels[1].DataFormat)
-	assert.Equal(t, ChannelAuto, client.channels[1].Contract)
+	assert.Equal(t, ChannelAuto, client.channels[1].contract)
 }
 
 func TestWithChannel_Defaults(t *testing.T) {
@@ -109,7 +109,7 @@ func TestWithChannel_Defaults(t *testing.T) {
 	channelCfg := client.channels[1]
 	assert.Equal(t, 60, channelCfg.AggregationPeriod)
 	assert.Equal(t, CompactFormat, channelCfg.DataFormat)
-	assert.Equal(t, ChannelAuto, channelCfg.Contract)
+	assert.Equal(t, ChannelAuto, channelCfg.contract)
 	assert.NotNil(t, channelCfg.Symbols)
 }
 

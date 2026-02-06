@@ -9,6 +9,7 @@ type MsgType string
 type ChannelContract string
 type ChannelService string
 type FeedDataFormat string
+type TimeUnit string
 type JSONDoubleConst string
 
 const (
@@ -36,6 +37,10 @@ const (
 	// Feed Data Format
 	FullFormat    FeedDataFormat = "FULL"
 	CompactFormat FeedDataFormat = "COMPACT"
+	// Time Unit for candle events
+	MinuteTimeUnit TimeUnit = "m"
+	HourTimeUnit   TimeUnit = "h"
+	DayTimeUnit    TimeUnit = "d"
 )
 
 // MessageCallback is a function type for handling received messages
