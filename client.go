@@ -117,6 +117,9 @@ func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...s
 
 	// Add default event fields if not already configured
 	for _, eventType := range eventTypes {
+		if eventType == "Candle" {
+			continue
+		}
 		if _, exists := channelCfg.EventFields[eventType]; !exists {
 			channelCfg.EventFields[eventType] = getDefaultEventFields(eventType)
 		}
@@ -134,8 +137,6 @@ func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...s
 				feedData.WithTrade()
 			case "Greeks":
 				feedData.WithGreeks()
-			case "Candle":
-				feedData.WithCandles()
 			}
 		}
 
@@ -157,7 +158,7 @@ func (c *DxLinkClient) AddCandleSymbols(
 	channel int,
 	period int,
 	timeUnit TimeUnit,
-	fromTime int,
+	fromTime int64,
 	symbols ...string,
 ) *DxLinkClient {
 	fmtSymbols := []string{}
@@ -166,6 +167,41 @@ func (c *DxLinkClient) AddCandleSymbols(
 			fmtSymbols,
 			fmt.Sprintf("%s{=%d%s}", symbol, period, string(timeUnit)),
 		)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Get or create channel config
+	channelCfg, exists := c.channels[channel]
+	if !exists {
+		// Auto-create channel with defaults
+		channelCfg = &ChannelConfig{
+			Channel:           channel,
+			contract:          ChannelAuto,
+			AggregationPeriod: 60,
+			dataFormat:        CompactFormat,
+			EventFields:       make(map[string][]string),
+			Symbols:           make(map[string]*feedData),
+		}
+		c.channels[channel] = channelCfg
+	}
+
+	// Add default event fields if not already configured
+	if _, exists := channelCfg.EventFields["Candle"]; !exists {
+		channelCfg.EventFields["Candle"] = getDefaultEventFields("Candle")
+	}
+
+	// Add Symbols
+	for _, symbol := range fmtSymbols {
+		feedData := NewFeedData().WithCandles()
+
+		channelCfg.Symbols[symbol] = feedData
+
+		// Add to pending subscriptions
+		channelCfg.pendingSubs = append(channelCfg.pendingSubs, FeedSubItem{
+			Type:   "Candle",
+			Symbol: symbol,
+		})
 	}
 
 	return c

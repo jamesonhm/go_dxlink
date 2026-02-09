@@ -15,11 +15,6 @@ func Midnight(d time.Time) time.Time {
 	return time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, TZNY())
 }
 
-func EndOfDay(date time.Time) (*time.Time, error) {
-	end := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 0, TZNY())
-	return &end, nil
-}
-
 func WeekdaysBetween(start, end time.Time) int {
 	offset := int(end.Weekday()) - int(start.Weekday())
 	if end.Weekday() == time.Sunday {

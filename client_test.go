@@ -81,7 +81,6 @@ func TestWithChannel(t *testing.T) {
 		Channel:           1,
 		contract:          ChannelAuto,
 		AggregationPeriod: 30,
-		DataFormat:        FullFormat,
 		EventFields: map[string][]string{
 			"Trade": {"eventType", "eventSymbol", "price"},
 		},
@@ -92,7 +91,7 @@ func TestWithChannel(t *testing.T) {
 	assert.Len(t, client.channels, 1)
 	assert.NotNil(t, client.channels[1])
 	assert.Equal(t, 30, client.channels[1].AggregationPeriod)
-	assert.Equal(t, CompactFormat, client.channels[1].DataFormat)
+	assert.Equal(t, CompactFormat, client.channels[1].dataFormat)
 	assert.Equal(t, ChannelAuto, client.channels[1].contract)
 }
 
@@ -108,7 +107,7 @@ func TestWithChannel_Defaults(t *testing.T) {
 
 	channelCfg := client.channels[1]
 	assert.Equal(t, 60, channelCfg.AggregationPeriod)
-	assert.Equal(t, CompactFormat, channelCfg.DataFormat)
+	assert.Equal(t, CompactFormat, channelCfg.dataFormat)
 	assert.Equal(t, ChannelAuto, channelCfg.contract)
 	assert.NotNil(t, channelCfg.Symbols)
 }
@@ -155,6 +154,21 @@ func TestAddSymbols_PendingSubscriptions(t *testing.T) {
 	assert.Equal(t, "SPY", channelCfg.pendingSubs[0].Symbol)
 	assert.Equal(t, "Quote", channelCfg.pendingSubs[1].Type)
 	assert.Equal(t, "SPY", channelCfg.pendingSubs[1].Symbol)
+}
+
+func TestAddCandleSymbols(t *testing.T) {
+	ctx := context.Background()
+	client := New(ctx, "ws://test", "token")
+
+	fromTime := Midnight(time.Now().AddDate(0, 0, -1)).Unix()
+	client.AddCandleSymbols(1, 5, "m", fromTime, "SPY", "QQQ")
+
+	assert.Len(t, client.channels, 1)
+	channelCfg := client.channels[1]
+	assert.Len(t, channelCfg.Symbols, 2)
+	assert.NotNil(t, channelCfg.Symbols["SPY{=5m}"])
+	assert.NotNil(t, channelCfg.Symbols["QQQ{=5m}"])
+	assert.NotNil(t, channelCfg.Symbols["SPY{=5m}"].Candles)
 }
 
 func TestWithEquities(t *testing.T) {
