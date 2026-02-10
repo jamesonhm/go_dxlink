@@ -199,8 +199,9 @@ func (c *DxLinkClient) AddCandleSymbols(
 
 		// Add to pending subscriptions
 		channelCfg.pendingSubs = append(channelCfg.pendingSubs, FeedSubItem{
-			Type:   "Candle",
-			Symbol: symbol,
+			Type:     "Candle",
+			Symbol:   symbol,
+			FromTime: fromTime,
 		})
 	}
 
