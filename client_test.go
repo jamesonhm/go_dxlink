@@ -141,6 +141,37 @@ func TestAddSymbols_MultipleEventTypes(t *testing.T) {
 	assert.NotNil(t, feedData.Greek.Gamma)
 }
 
+func TestAddSymbols_MultipleEventsBadCandle(t *testing.T) {
+	ctx := context.Background()
+	client := New(ctx, "ws://test", "token")
+
+	client.AddSymbols(1, []string{"Trade", "Candle"}, "SPY", "QQQ")
+
+	assert.Len(t, client.channels, 1)
+	channelCfg := client.channels[1]
+	assert.Len(t, channelCfg.Symbols, 2)
+	assert.NotNil(t, channelCfg.Symbols["SPY"])
+	assert.NotNil(t, channelCfg.Symbols["QQQ"])
+	assert.NotNil(t, channelCfg.Symbols["SPY"].Trade.Price)
+	assert.Nil(t, channelCfg.Symbols["SPY"].Candles)
+	assert.Nil(t, channelCfg.Symbols["QQQ"].Candles)
+}
+
+func TestAddSymbols_BadCandle(t *testing.T) {
+	ctx := context.Background()
+	client := New(ctx, "ws://test", "token")
+
+	client.AddSymbols(1, []string{"Candle"}, "SPY", "QQQ")
+
+	assert.Len(t, client.channels, 1)
+	channelCfg := client.channels[1]
+	assert.Len(t, channelCfg.Symbols, 2)
+	assert.NotNil(t, channelCfg.Symbols["SPY"])
+	assert.NotNil(t, channelCfg.Symbols["QQQ"])
+	assert.Nil(t, channelCfg.Symbols["SPY"].Candles)
+	assert.Nil(t, channelCfg.Symbols["QQQ"].Candles)
+}
+
 func TestAddSymbols_PendingSubscriptions(t *testing.T) {
 	ctx := context.Background()
 	client := New(ctx, "ws://test", "token")

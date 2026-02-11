@@ -96,6 +96,9 @@ func (c *DxLinkClient) WithChannel(config ChannelConfig) *DxLinkClient {
 	return c
 }
 
+// AddSymbols creates a ChannelConfig and adds the given symbols and eventTypes
+// This method will ignore the eventType "Candle" as it has special requirements
+// For Candle events, please use "AddCandleSymbols"
 func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...string) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
