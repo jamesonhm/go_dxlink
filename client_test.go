@@ -230,7 +230,6 @@ func TestWithFutures(t *testing.T) {
 	assert.Len(t, client.channels, 1)
 	channelCfg := client.channels[5]
 	assert.Len(t, channelCfg.Symbols, 2)
-	assert.NotNil(t, client.futuresEvent)
 }
 
 func TestWithDataCallback(t *testing.T) {
@@ -457,9 +456,13 @@ func TestProcessFeedData_WithCallback(t *testing.T) {
 	assert.Equal(t, "SPY", receivedData.Trades[0].Symbol)
 }
 
-func TestFuturesEventProducer(t *testing.T) {
+func TestEventProducer(t *testing.T) {
 	ctx := context.Background()
-	client := New(ctx, "ws://test", "token").WithFutures("/ES")
+	client := New(ctx, "ws://test", "token")
+	client.WithFutures("/ES")
+	assert.Nil(t, client.channels[5].eventProducer)
+	client.WithEventProducer(5)
+	assert.NotNil(t, client.channels[5].eventProducer)
 
 	price := 4500.0
 	data := ProcessedFeedData{
@@ -475,7 +478,7 @@ func TestFuturesEventProducer(t *testing.T) {
 	go client.processFeedData(5, data)
 
 	select {
-	case received := <-client.FuturesEventProducer():
+	case received := <-client.EventProducer(5):
 		assert.Len(t, received.Trades, 1)
 		assert.Equal(t, "/ES", received.Trades[0].Symbol)
 		assert.Equal(t, 4500.0, *received.Trades[0].Price)
@@ -705,6 +708,7 @@ func TestChainedConfiguration(t *testing.T) {
 		WithEquities("SPY", "QQQ").
 		WithOptions(".SPY240115C450").
 		WithFutures("/ES").
+		WithEventProducer(5).
 		WithDataCallback(1, func(data ProcessedFeedData) {})
 
 	assert.NotNil(t, client.dxlog)
@@ -713,5 +717,5 @@ func TestChainedConfiguration(t *testing.T) {
 	assert.Len(t, client.channels[3].Symbols, 1) // Options
 	assert.Len(t, client.channels[5].Symbols, 1) // Futures
 	assert.Len(t, client.dataCallbacks, 1)
-	assert.NotNil(t, client.futuresEvent)
+	assert.NotNil(t, client.channels[5].eventProducer)
 }

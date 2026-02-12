@@ -14,13 +14,14 @@ import (
 
 // ChannelConfig holds config for a specific channel
 type ChannelConfig struct {
-	Channel           int
-	contract          ChannelContract
 	AggregationPeriod int
-	dataFormat        FeedDataFormat
+	Channel           int
 	EventFields       map[string][]string  // event type -> field names
 	Symbols           map[string]*feedData // symbol -> feedData
-	pendingSubs       []FeedSubItem        // Items not yet sent to server
+	eventProducer     chan ProcessedFeedData
+	contract          ChannelContract
+	dataFormat        FeedDataFormat
+	pendingSubs       []FeedSubItem // Items not yet sent to server
 }
 
 type DxLinkClient struct {
@@ -42,7 +43,6 @@ type DxLinkClient struct {
 
 	//Channel-based subscription management
 	channels      map[int]*ChannelConfig
-	futuresEvent  chan ProcessedFeedData
 	dataCallbacks map[int]func(ProcessedFeedData) // Channel -> callback
 }
 
@@ -98,7 +98,7 @@ func (c *DxLinkClient) WithChannel(config ChannelConfig) *DxLinkClient {
 
 // AddSymbols creates a ChannelConfig and adds the given symbols and eventTypes
 // This method will ignore the eventType "Candle" as it has special requirements
-// For Candle events, please use "AddCandleSymbols"
+// For Candle events use "AddCandleSymbols"
 func (c *DxLinkClient) AddSymbols(channel int, eventTypes []string, symbols ...string) *DxLinkClient {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -226,9 +226,15 @@ func (c *DxLinkClient) WithOptions(symbols ...string) *DxLinkClient {
 // Convenience methods for futures subscriptions
 // Futures use channel 5 by default
 func (c *DxLinkClient) WithFutures(symbols ...string) *DxLinkClient {
-	c.futuresEvent = make(chan ProcessedFeedData)
-
 	return c.AddSymbols(5, []string{"Trade"}, symbols...)
+}
+
+func (c *DxLinkClient) WithEventProducer(channel int) *DxLinkClient {
+	channelCfg, exists := c.channels[channel]
+	if exists {
+		channelCfg.eventProducer = make(chan ProcessedFeedData)
+	}
+	return c
 }
 
 // WithDataCallback sets a callback for data recieved on a specific channel
@@ -425,9 +431,11 @@ func (c *DxLinkClient) Close() error {
 
 	c.cancel()
 
-	slog.Info("closing output channels")
-	if c.futuresEvent != nil {
-		close(c.futuresEvent)
+	slog.Info("closing event producer channels")
+	for _, channelCfg := range c.channels {
+		if channelCfg.eventProducer != nil {
+			close(channelCfg.eventProducer)
+		}
 	}
 
 	err := c.conn.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
@@ -705,8 +713,8 @@ func (c *DxLinkClient) processFeedData(channel int, data ProcessedFeedData) {
 	}
 
 	// Output channel producers
-	if channel == 5 && c.futuresEvent != nil {
-		c.produceData(c.futuresEvent, data)
+	if channelCfg.eventProducer != nil {
+		c.produceData(channelCfg.eventProducer, data)
 	}
 }
 
@@ -748,8 +756,11 @@ func (c *DxLinkClient) produceData(ch chan ProcessedFeedData, data ProcessedFeed
 	}
 }
 
-func (c *DxLinkClient) FuturesEventProducer() <-chan ProcessedFeedData {
-	return c.futuresEvent
+func (c *DxLinkClient) EventProducer(channel int) <-chan ProcessedFeedData {
+	if channelCfg, exists := c.channels[channel]; exists {
+		return channelCfg.eventProducer
+	}
+	return nil
 }
 
 func (c *DxLinkClient) ResetData() {
